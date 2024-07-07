@@ -1,0 +1,21 @@
+services:
+  pytorch:
+    build:
+      context: ./env  # Directory containing your Dockerfile
+      dockerfile: Dockerfile
+    image: pytorch_custom:2.3.1
+    container_name: pytorch_container
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            capabilities: [gpu, utility, compute]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all  # Makes all GPUs visible inside the container
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility  # Required capabilities
+    volumes:
+      - .:/workspace  # Mounts the current directory to the container's workspace
+    ports:
+      - "33333:22"  # SSH port mapping, host:container
+    command: /usr/sbin/sshd -D  # Command to run the SSH daemon

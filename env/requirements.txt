@@ -1,0 +1,12 @@
+# ai
+tifffile
+rasterio
+imagecodecs
+torch
+torchvision
+
+# utils
+tqdm
+types-pytz
+matplotlib
+seaborn
