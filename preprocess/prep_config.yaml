@@ -1,0 +1,7 @@
+base_dir: /workspace
+data_dir: "${base_dir}/data/umbra"
+window_size: 256
+step_size: 64
+dataset_name: "umbra-w${window_size}-s${step_size}"
+output_dir: "${base_dir}/dataset/${dataset_name}"
+log_path: "${base_dir}/logs/preprocess.log"

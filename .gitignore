@@ -1,4 +1,11 @@
-data/
+data/MNIST
+data/umbra
+dataset/
 logs/
+results/
+
+**.tif
+**.png
 
 **.pyc
+__pycache__

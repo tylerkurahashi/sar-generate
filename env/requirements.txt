@@ -1,9 +1,12 @@
 # ai
+diffusers[training]
 tifffile
 rasterio
 imagecodecs
 torch
+torch_ema
 torchvision
+rich
 
 # utils
 tqdm

@@ -1,0 +1,14 @@
+{
+    "yaml.schemas": {
+        "https://json.schemastore.org/yamllint.json": "file:///workspace/preprecess/prep_config.yaml"
+    },
+    "editor.formatOnSave": true,
+    "editor.formatOnPaste": true,
+    "editor.formatOnType": true,
+    "editor.formatOnSaveMode": "file",
+    "editor.codeActionsOnSave": {
+        // "source.fixAll": "always",
+        "source.organizeImports": "always"
+    },
+    "ruff.enable": true
+}

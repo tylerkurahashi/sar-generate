@@ -1,95 +1,111 @@
 import os
-import pytz
-from datetime import datetime
+
+import pytorch_lightning as pl
 import torch
-from torch.utils.data import DataLoader
-from torch.optim import Adam
 import torch.nn.functional as F
-import torchvision
-from torchvision import transforms
-import matplotlib.pyplot as plt
-from tqdm import tqdm
+from omegaconf import DictConfig, OmegaConf
+from torch import optim
+from torch.optim import Adam
+from torch_ema import ExponentialMovingAverage as EMA
 
-from model.diffuser import Diffuser
-from model.unet import UNet
-
-img_size = 28
-batch_size = 1024
-num_timesteps = 1000
-epochs = 100
-lr = 1e-3
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
-jst = pytz.timezone("Asia/Tokyo")
-start_date = datetime.strftime(datetime.now(jst), "%Y%m%d_%H%M")
-log_dir = f"./logs/{start_date}"
-resume_from_checkpoint = "./logs/20240703_1153/best_model.pth"
-best_model_path = f"{log_dir}/best_model.pth"
-
-os.makedirs(log_dir, exist_ok=True)
+import diffusers  # noqa: F401
+from data.umbra import UmbraDataModule
 
 
-def save_images(images, save_dir, rows=2, cols=10):
-    fig = plt.figure(figsize=(cols, rows))
-    i = 0
-    for _ in range(rows):
-        for _ in range(cols):
-            fig.add_subplot(rows, cols, i + 1)
-            plt.imshow(images[i], cmap="gray")
-            plt.axis("off")
-            i += 1
-    plt.savefig(f"{save_dir}/generated.png")
+cfg = OmegaConf.load("config.yaml")
+torch.set_float32_matmul_precision("medium")
 
 
-preprocess = transforms.ToTensor()
-dataset = torchvision.datasets.MNIST(root="./data", download=True, transform=preprocess)
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+class Diffusion(pl.LightningModule):
+    def __init__(self, cfg: DictConfig):
+        super().__init__()
 
-diffuser = Diffuser(num_timesteps, device=device)
-model = UNet()
-optimizer = Adam(model.parameters(), lr=lr)
+        self.cfg = cfg
+        self.model = eval(self.cfg.model._target_)(**self.cfg.model.params)
+        self.train_scheduler = eval(self.cfg.noise._target_)(**self.cfg.noise.params)
+        self.infer_scheduler = eval(self.cfg.noise._target_)(**self.cfg.noise.params)
 
-if resume_from_checkpoint != "":
-    cp = torch.load(resume_from_checkpoint)
-    model.load_state_dict(cp)
+        self.ema = (
+            EMA(self.model.parameters(), decay=self.cfg.hp.training.ema_decay)
+            if self.cfg.hp.training.ema_decay != -1
+            else None
+        )
 
-model.to(device)
+        # self.save_hyperparameters()
 
-losses = []
-best_loss = float("inf")
+    def forward(self, x):
+        return self.model(x)
 
-for epoch in range(epochs):
-    loss_sum = 0.0
-    cnt = 0
+    def training_step(self, batch, batch_idx):
+        clean_images = batch
+        noise = torch.randn_like(clean_images)
+        timesteps = torch.randint(
+            0,
+            self.train_scheduler.config.num_train_timesteps,
+            size=(clean_images.size(0),),
+            device=self.device,
+        ).long()
 
-    for images, labels in tqdm(dataloader):
-        optimizer.zero_grad()
-        x = images.to(device)
-        t = torch.randint(1, num_timesteps + 1, (len(x),), device=device)
+        noisy_images = self.train_scheduler.add_noise(clean_images, noise, timesteps)
+        model_output = self.model(noisy_images, timesteps).sample
 
-        x_noisy, noise = diffuser.add_noise(x, t)
-        noise_pred = model(x_noisy, t)
-        loss = F.mse_loss(noise, noise_pred)
+        loss = F.mse_loss(model_output, noise)
+        log_key = f'{"train" if self.training else "val"}/simple_loss'
+        self.log_dict(
+            {
+                log_key: loss,
+            },
+            prog_bar=True,
+            sync_dist=True,
+            on_step=self.training,
+            on_epoch=not self.training,
+        )
 
-        loss.backward()
-        optimizer.step()
+        return loss
 
-        loss_sum += loss.item()
-        cnt += 1
+    def validation_step(self, batch, batch_idx):
+        return self.training_step(batch, batch_idx)
 
-    loss_avg = loss_sum / cnt
-    losses.append(loss_avg)
-    print(f"Epoch {epoch} | Loss: {loss_avg}")
+    def configure_optimizers(self):
+        optimizer = Adam(self.parameters(), lr=cfg.hp.training.lr)
+        sched = optim.lr_scheduler.StepLR(optimizer, 1, gamma=0.99)
 
-    if loss_avg < best_loss:
-        best_loss = loss_avg
-        torch.save(model.state_dict(), best_model_path)
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": sched, "interval": "epoch", "frequency": 1},
+        }
 
 
-plt.plot(losses)
-plt.xlabel("Epoch")
-plt.ylabel("Loss")
-plt.savefig(f"{log_dir}/loss.png")
+def main(cfg: DictConfig):
+    OmegaConf.resolve(cfg)
 
-images = diffuser.sample(model)
-save_images(images, log_dir)
+    system = Diffusion(cfg)
+    datamodule = UmbraDataModule(cfg.dm)
+
+    os.makedirs(cfg.dm.output_dir, exist_ok=True)
+
+    cb_ckpt = pl.callbacks.ModelCheckpoint(
+        dirpath=cfg.dm.output_dir,
+        filename=cfg.dm.ckpt_filename,
+        monitor="val/simple_loss",
+        save_top_k=1,
+        mode="min",
+        save_last=True,
+    )
+
+    trainer = pl.Trainer(
+        logger=eval(cfg.log._target_)(**cfg.log.params),
+        callbacks=[
+            pl.callbacks.LearningRateMonitor(
+                "epoch", log_momentum=True, log_weight_decay=True
+            ),
+            pl.callbacks.RichProgressBar(),
+            cb_ckpt,
+        ],
+        **cfg.hp.pl_trainer,
+    )
+    trainer.fit(system, datamodule=datamodule, ckpt_path=cfg.hp.resume_from_checkpoint)
+
+
+if __name__ == "__main__":
+    main(cfg)
