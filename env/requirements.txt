@@ -5,6 +5,8 @@ rasterio
 imagecodecs
 torch
 torch_ema
+pytorch-lightning
+albumentations
 torchvision
 rich
 
@@ -13,3 +15,5 @@ tqdm
 types-pytz
 matplotlib
 seaborn
+omegaconf
+wandb>=0.12.10
